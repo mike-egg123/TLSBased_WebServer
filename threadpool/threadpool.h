@@ -100,7 +100,7 @@ void threadpool<T>::run()
         if (!request)
             continue;
 
-        connectionRAII mysqlcon(&request->mysql, m_connPool);
+        connectionRAII connectionRAII(&request->postgres_conn, m_connPool);
 
         request->process();
     }

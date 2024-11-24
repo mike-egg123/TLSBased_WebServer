@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
     assert(users);
 
     //初始化数据库读取表
-    users->initmysql_result(connPool);
+    users->initpostgres_result(connPool);
 
     int listenfd = socket(PF_INET, SOCK_STREAM, 0);
     assert(listenfd >= 0);

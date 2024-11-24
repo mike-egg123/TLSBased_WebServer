@@ -66,3 +66,40 @@ void time_wheel::del_timer(time_wheel_timer *timer) {
     }
 }
 
+void time_wheel::tick() {
+    // 获取当前槽中的定时器
+    time_wheel_timer *timer = slots[cur_slot];
+
+    // 如果当前槽没有定时器，则直接返回
+    if (!timer) {
+        std::cout << "No timer in current slot." << std::endl;
+        return;
+    }
+
+    std::cout << "Tick: Processing timers in slot " << cur_slot << std::endl;
+
+    // 遍历当前槽的所有定时器
+    while (timer) {
+        // 获取下一个定时器
+        time_wheel_timer *next_timer = timer->next;
+
+        // 如果定时器的旋转次数已经到达，调用其回调函数
+        if (timer->rotation == 0) {
+            // 执行定时器回调函数
+            if (timer->cb_func) {
+                timer->cb_func(timer->user_data);
+            }
+            // 删除该定时器
+            del_timer(timer);
+        } else {
+            // 否则，减少旋转次数
+            timer->rotation--;
+        }
+
+        // 移动到下一个定时器
+        timer = next_timer;
+    }
+
+    // 当前槽处理完毕，向前滚动到下一个槽
+    cur_slot = (cur_slot + 1) % N;
+}

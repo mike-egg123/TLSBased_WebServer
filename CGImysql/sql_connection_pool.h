@@ -3,60 +3,64 @@
 
 #include <stdio.h>
 #include <list>
-#include <mysql/mysql.h>
-#include <error.h>
+#include <pqxx/pqxx>
 #include <string.h>
 #include <iostream>
 #include <string>
 #include "../lock/locker.h"
-
 #include "../ConcurrentMemoryPool/Common.h"
 #include "../ConcurrentMemoryPool/ConcurrentAlloc.h"
 
 using namespace std;
+using namespace pqxx;
 
-class connection_pool
-{
+// 数据库连接池类
+class connection_pool {
 public:
-    MYSQL *GetConnection();				 //获取数据库连接
-    bool ReleaseConnection(MYSQL *conn); //释放连接
-    int GetFreeConn();					 //获取连接
-    void DestroyPool();					 //销毁所有连接
+    // 获取连接
+    connection *GetConnection();
 
-    //单例模式
+    // 释放连接
+    bool ReleaseConnection(connection *conn);
+
+    // 获取空闲连接数
+    int GetFreeConn();
+
+    // 销毁连接池
+    void DestroyPool();
+
+    // 单例模式获取实例
     static connection_pool *GetInstance();
 
+    // 初始化连接池
     void init(string url, string User, string PassWord, string DataBaseName, int Port, unsigned int MaxConn);
 
     connection_pool();
     ~connection_pool();
 
 private:
-    unsigned int MaxConn;  //最大连接数
-    unsigned int CurConn;  //当前已使用的连接数
-    unsigned int FreeConn; //当前空闲的连接数
+    unsigned int MaxConn;  // 最大连接数
+    unsigned int CurConn;  // 当前已使用的连接数
+    unsigned int FreeConn; // 当前空闲的连接数
 
-private:
     locker lock;
-    list<MYSQL *> connList; //连接池
+    list<connection*> connList; // 连接池
     sem reserve;
 
-private:
-    string url;			 //主机地址
-    string Port;		 //数据库端口号
-    string User;		 //登陆数据库用户名
-    string PassWord;	 //登陆数据库密码
-    string DatabaseName; //使用数据库名
+    string url;                // 主机地址
+    string User;               // 登录数据库用户名
+    string PassWord;           // 登录数据库密码
+    string DatabaseName;       // 使用的数据库名
 };
 
-class connectionRAII{
-
+// RAII 封装类
+class connectionRAII {
 public:
-    connectionRAII(MYSQL **con, connection_pool *connPool);
+    connectionRAII(connection **con, connection_pool *connPool);
     ~connectionRAII();
 
 private:
-    MYSQL *conRAII;
+    connection *conRAII;
     connection_pool *poolRAII;
 };
 

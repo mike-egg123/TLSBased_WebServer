@@ -1,12 +1,14 @@
 #include "http_conn.h"
 #include "../log/log.h"
 #include <map>
-#include <mysql/mysql.h>
+#include <pqxx/pqxx>
 #include <fstream>
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+using namespace pqxx;
 
 #define connfdET //边缘触发非阻塞
 //#define connfdLT //水平触发阻塞
@@ -32,33 +34,24 @@ const char *doc_root = "/home/chenjunyi/Desktop/WebServer/TinyWebServer-raw_vers
 map<string, string> users;
 locker m_lock;
 
-void http_conn::initmysql_result(connection_pool *connPool)
-{
-    //先从连接池中取一个连接
-    MYSQL *mysql = NULL;
-    connectionRAII mysqlcon(&mysql, connPool);
+void http_conn::initpostgres_result(connection_pool *connPool) {
+    // 从连接池中获取一个 PostgreSQL 连接
+    connection *conn = nullptr;
+    connectionRAII postgrescon(&conn, connPool);
 
-    //在user表中检索username，passwd数据，浏览器端输入
-    if (mysql_query(mysql, "SELECT username,passwd FROM user"))
-    {
-        LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
-    }
+    try {
+        // 执行 SQL 查询，检索 `username` 和 `passwd` 数据
+        nontransaction txn(*conn);
+        result res = txn.exec("SELECT username, passwd FROM user");
 
-    //从表中检索完整的结果集
-    MYSQL_RES *result = mysql_store_result(mysql);
-
-    //返回结果集中的列数
-    int num_fields = mysql_num_fields(result);
-
-    //返回所有字段结构的数组
-    MYSQL_FIELD *fields = mysql_fetch_fields(result);
-
-    //从结果集中获取下一行，将对应的用户名和密码，存入map中
-    while (MYSQL_ROW row = mysql_fetch_row(result))
-    {
-        string temp1(row[0]);
-        string temp2(row[1]);
-        users[temp1] = temp2;
+        // 遍历结果集，将用户名和密码存入 `users` map 中
+        for (const auto &row : res) {
+            std::string username = row["username"].c_str();
+            std::string password = row["passwd"].c_str();
+            users[username] = password;
+        }
+    } catch (const std::exception &e) {
+        LOG_ERROR("PostgreSQL SELECT error: %s", e.what());
     }
 }
 
@@ -151,7 +144,7 @@ void http_conn::init(int sockfd, const sockaddr_in &addr)
 //check_state默认为分析请求行状态
 void http_conn::init()
 {
-    mysql = NULL;
+    postgres_conn = nullptr;
     bytes_to_send = 0;
     bytes_have_send = 0;
     m_check_state = CHECK_STATE_REQUESTLINE;
@@ -409,21 +402,15 @@ http_conn::HTTP_CODE http_conn::do_request()
     int len = strlen(doc_root);
     const char *p = strrchr(m_url, '/');
 
-    //处理cgi
-    if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
-    {
-
-        //根据标志判断是登录检测还是注册检测
+    if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3')) {
         char flag = m_url[1];
-
         char *m_url_real = (char *)ConcurrentAlloc(sizeof(char) * 200);
         strcpy(m_url_real, "/");
         strcat(m_url_real, m_url + 2);
         strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len - 1);
         ConcurrentFree(m_url_real);
 
-        //将用户名和密码提取出来
-        //user=123&passwd=123
+        // 提取用户名和密码
         char name[100], password[100];
         int i;
         for (i = 5; m_string[i] != '&'; ++i)
@@ -435,44 +422,38 @@ http_conn::HTTP_CODE http_conn::do_request()
             password[j] = m_string[i];
         password[j] = '\0';
 
-        //同步线程登录校验
-        if (*(p + 1) == '3')
-        {
-            //如果是注册，先检测数据库中是否有重名的
-            //没有重名的，进行增加数据
-            char *sql_insert = (char *)ConcurrentAlloc(sizeof(char) * 200);
+        // 注册逻辑
+        if (*(p + 1) == '3') {
+            try {
+                if (users.find(name) == users.end()) {
+                    // 插入新用户到数据库
+                    work txn(*postgres_conn);
+                    txn.exec("INSERT INTO user (username, passwd) VALUES (" +
+                             txn.quote(name) + ", " + txn.quote(password) + ")");
+                    txn.commit();
 
-            strcpy(sql_insert, "INSERT INTO user(username, passwd) VALUES(");
-            strcat(sql_insert, "'");
-            strcat(sql_insert, name);
-            strcat(sql_insert, "', '");
-            strcat(sql_insert, password);
-            strcat(sql_insert, "')");
+                    // 更新本地缓存
+                    m_lock.lock();
+                    users[name] = password;
+                    m_lock.unlock();
 
-            if (users.find(name) == users.end())
-            {
-
-                m_lock.lock();
-                int res = mysql_query(mysql, sql_insert);
-                users.insert(pair<string, string>(name, password));
-                m_lock.unlock();
-
-                if (!res)
                     strcpy(m_url, "/log.html");
-                else
+                } else {
                     strcpy(m_url, "/registerError.html");
-            }
-            else
+                }
+            } catch (const std::exception &e) {
+                LOG_ERROR("PostgreSQL INSERT error: %s", e.what());
                 strcpy(m_url, "/registerError.html");
+            }
         }
-            //如果是登录，直接判断
-            //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
-        else if (*(p + 1) == '2')
-        {
-            if (users.find(name) != users.end() && users[name] == password)
+
+        // 登录逻辑
+        if (*(p + 1) == '2') {
+            if (users.find(name) != users.end() && users[name] == password) {
                 strcpy(m_url, "/welcome.html");
-            else
+            } else {
                 strcpy(m_url, "/logError.html");
+            }
         }
     }
 
